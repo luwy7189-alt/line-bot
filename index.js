@@ -1,6 +1,9 @@
 const express = require("express");
 const { google } = require("googleapis");
 
+console.log("PRIVATE KEY EXISTS:", !!process.env.GOOGLE_PRIVATE_KEY);
+console.log("EMAIL EXISTS:", !!process.env.GOOGLE_CLIENT_EMAIL);
+
 const app = express();
 app.use(express.json());
 
