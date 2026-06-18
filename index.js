@@ -35,7 +35,7 @@ async function getPrice(stock) {
 }
 
 // =========================
-// LINE Reply
+// LINE reply
 // =========================
 async function reply(replyToken, text) {
   if (!LINE_TOKEN) return;
@@ -73,9 +73,9 @@ app.post("/webhook", async (req, res) => {
     const sheets = google.sheets({ version: "v4", auth });
 
     // =====================================================
-    // 📊 總覽
+    // 🚨 1. 持股（一定要最先判斷）
     // =====================================================
-    if (text.includes("總覽") || text.includes("總攬")) {
+    if (text.includes("持股")) {
 
       const all = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
@@ -109,36 +109,29 @@ app.post("/webhook", async (req, res) => {
         }
       }
 
-      let totalCost = 0;
-      let totalValue = 0;
+      let msg = "📊 持股報表\n\n";
 
       for (const s in data) {
         const qty = data[s].qty;
-        const cost = data[s].cost;
+        if (qty <= 0) continue;
 
+        const avgCost = data[s].cost / qty;
         const price = await getPrice(s);
+        const profit = (price - avgCost) * qty;
 
-        totalCost += cost;
-        totalValue += price * qty;
+        msg += `${s}
+股數：${qty}
+成本：${avgCost.toFixed(2)}
+市價：${price}
+損益：${profit.toFixed(0)}\n\n`;
       }
-
-      const profit = totalValue - totalCost;
-      const roi = totalCost > 0 ? (profit / totalCost) * 100 : 0;
-
-      const msg =
-`📊 投資總覽
-
-總成本：${totalCost.toFixed(0)}
-現值：${totalValue.toFixed(0)}
-損益：${profit.toFixed(0)}
-報酬率：${roi.toFixed(2)}%`;
 
       await reply(replyToken, msg);
       return res.send("ok");
     }
 
     // =====================================================
-    // 📊 個股查詢（2330）
+    // 📊 2. 個股查詢（2330）
     // =====================================================
     if (/^\d{4}$/.test(text)) {
 
@@ -209,12 +202,12 @@ app.post("/webhook", async (req, res) => {
     }
 
     // =====================================================
-    // 📌 交易（買/賣）
+    // 💰 3. 交易（最後才處理）
     // =====================================================
     const parts = text.split(" ");
 
     if (parts.length < 4) {
-      await reply(replyToken, "格式：買/賣 股票 價格 股數");
+      await reply(replyToken, "格式: 買/賣 股票 價格 股數");
       return res.send("bad");
     }
 
