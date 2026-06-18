@@ -22,13 +22,20 @@ function getAuth() {
 }
 
 // =========================
-// Yahoo 股價
+// Yahoo 股價（穩定版）
 // =========================
 async function getPrice(stock) {
   try {
     const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${stock}.TW`;
-    const res = await axios.get(url);
-    return res.data.quoteResponse.result?.[0]?.regularMarketPrice || 0;
+
+    const res = await axios.get(url, {
+      timeout: 5000,
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+
+    const result = res.data?.quoteResponse?.result?.[0];
+    return result?.regularMarketPrice || 0;
+
   } catch {
     return 0;
   }
@@ -65,7 +72,12 @@ app.post("/webhook", async (req, res) => {
     const event = req.body.events?.[0];
     if (!event) return res.send("no event");
 
-    const text = (event.message?.text || "").trim();
+    // 🚨 防呆清理
+    const text = (event.message?.text || "")
+      .replace(/\r/g, "")
+      .replace(/\n/g, "")
+      .trim();
+
     const replyToken = event.replyToken;
 
     const auth = getAuth();
@@ -73,7 +85,7 @@ app.post("/webhook", async (req, res) => {
     const sheets = google.sheets({ version: "v4", auth });
 
     // =====================================================
-    // 🚨 1. 持股（一定要最先判斷）
+    // 📊 持股
     // =====================================================
     if (text.includes("持股")) {
 
@@ -83,7 +95,6 @@ app.post("/webhook", async (req, res) => {
       });
 
       const rows = all.data.values || [];
-
       const data = {};
 
       for (const row of rows) {
@@ -113,7 +124,8 @@ app.post("/webhook", async (req, res) => {
 
       for (const s in data) {
         const qty = data[s].qty;
-        if (qty <= 0) continue;
+
+        if (!qty || qty <= 0) continue; // 🚨 賣光不顯示
 
         const avgCost = data[s].cost / qty;
         const price = await getPrice(s);
@@ -131,7 +143,73 @@ app.post("/webhook", async (req, res) => {
     }
 
     // =====================================================
-    // 📊 2. 個股查詢（2330）
+    // 📊 總覽 / 總攬
+    // =====================================================
+    if (text === "總覽" || text === "總攬") {
+
+      const all = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: "Sheet1!A:E"
+      });
+
+      const rows = all.data.values || [];
+      const data = {};
+
+      for (const row of rows) {
+        const stock = row[1];
+        const action = row[2];
+        const price = Number(row[3]);
+        const qty = Number(row[4]);
+
+        if (!stock || !action || isNaN(qty)) continue;
+
+        if (!data[stock]) data[stock] = { qty: 0, cost: 0 };
+
+        if (action === "買") {
+          data[stock].qty += qty;
+          data[stock].cost += price * qty;
+        }
+
+        if (action === "賣") {
+          const avg = data[stock].qty > 0 ? data[stock].cost / data[stock].qty : 0;
+          const sellQty = Math.min(qty, data[stock].qty);
+          data[stock].qty -= sellQty;
+          data[stock].cost -= avg * sellQty;
+        }
+      }
+
+      let totalCost = 0;
+      let totalValue = 0;
+
+      for (const s in data) {
+        const qty = data[s].qty;
+        const cost = data[s].cost;
+
+        if (qty <= 0) continue;
+
+        const price = await getPrice(s);
+
+        totalCost += cost;
+        totalValue += price * qty;
+      }
+
+      const profit = totalValue - totalCost;
+      const roi = totalCost > 0 ? (profit / totalCost) * 100 : 0;
+
+      const msg =
+`📊 投資總覽
+
+總成本：${totalCost.toFixed(0)}
+現值：${totalValue.toFixed(0)}
+損益：${profit.toFixed(0)}
+報酬率：${roi.toFixed(2)}%`;
+
+      await reply(replyToken, msg);
+      return res.send("ok");
+    }
+
+    // =====================================================
+    // 📊 個股查詢（2330）
     // =====================================================
     if (/^\d{4}$/.test(text)) {
 
@@ -202,7 +280,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     // =====================================================
-    // 💰 3. 交易（最後才處理）
+    // 💰 交易
     // =====================================================
     const parts = text.split(" ");
 
