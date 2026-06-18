@@ -6,17 +6,18 @@ const app = express();
 app.use(express.json());
 
 const SHEET_ID = "1-9-RSSysVjFKRQ7RnJ5zkGtKIxcKqjhmvA0fqCqj_sw";
-
 const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 
 // =========================
-// Google Auth
+// Google Auth（安全版）
 // =========================
 function getAuth() {
+  const key = process.env.GOOGLE_PRIVATE_KEY;
+
   return new google.auth.JWT(
     process.env.GOOGLE_CLIENT_EMAIL,
     null,
-    process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    (key || "").replace(/\\n/g, "\n"),
     ["https://www.googleapis.com/auth/spreadsheets"]
   );
 }
@@ -33,8 +34,7 @@ async function getPrice(stock) {
       headers: { "User-Agent": "Mozilla/5.0" }
     });
 
-    const result = res.data?.quoteResponse?.result?.[0];
-    return result?.regularMarketPrice || 0;
+    return res.data?.quoteResponse?.result?.[0]?.regularMarketPrice || 0;
 
   } catch {
     return 0;
@@ -63,14 +63,14 @@ async function reply(replyToken, text) {
 }
 
 // =========================
-// CLEAN TEXT（🔥關鍵修復）
+// CLEAN TEXT（🔥重點修復）
 // =========================
 function cleanText(t) {
   return (t || "")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "") // invisible char
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
     .replace(/\r/g, "")
     .replace(/\n/g, "")
-    .trim();
+    .trim(); // ❌ 不要 toLowerCase（中文會壞）
 }
 
 app.get("/", (req, res) => res.send("OK"));
@@ -83,8 +83,8 @@ app.post("/webhook", async (req, res) => {
     const event = req.body.events?.[0];
     if (!event) return res.send("no event");
 
-    let text = cleanText(event.message?.text);
     const replyToken = event.replyToken;
+    const text = cleanText(event.message?.text);
 
     console.log("📩 INPUT:", text);
 
@@ -93,14 +93,10 @@ app.post("/webhook", async (req, res) => {
     const sheets = google.sheets({ version: "v4", auth });
 
     // =====================================================
-    // 📊 持股（多種輸入都支援）
+    // 📊 持股（修正：用 includes + 更穩）
     // =====================================================
-    if (
-      text === "持股" ||
-      text === "我的持股" ||
-      text === "持股報表" ||
-      text.includes("持股")
-    ) {
+    if (text.includes("持股")) {
+
       const all = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
         range: "Sheet1!A:E"
@@ -136,7 +132,7 @@ app.post("/webhook", async (req, res) => {
 
       for (const s in data) {
         const qty = data[s].qty;
-        if (!qty || qty <= 0) continue;
+        if (qty <= 0) continue;
 
         const avgCost = data[s].cost / qty;
         const price = await getPrice(s);
@@ -154,14 +150,10 @@ app.post("/webhook", async (req, res) => {
     }
 
     // =====================================================
-    // 📊 總覽
+    // 📊 總覽（修正）
     // =====================================================
-    if (
-      text === "總覽" ||
-      text === "總攬" ||
-      text.includes("總覽") ||
-      text.includes("總攬")
-    ) {
+    if (text.includes("總覽") || text.includes("總攬")) {
+
       const all = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
         range: "Sheet1!A:E"
@@ -198,18 +190,16 @@ app.post("/webhook", async (req, res) => {
 
       for (const s in data) {
         const qty = data[s].qty;
-        const cost = data[s].cost;
-
         if (qty <= 0) continue;
 
         const price = await getPrice(s);
 
-        totalCost += cost;
+        totalCost += data[s].cost;
         totalValue += price * qty;
       }
 
       const profit = totalValue - totalCost;
-      const roi = totalCost > 0 ? (profit / totalCost) * 100 : 0;
+      const roi = totalCost ? (profit / totalCost) * 100 : 0;
 
       const msg =
 `📊 投資總覽
@@ -224,7 +214,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     // =====================================================
-    // 📊 個股查詢
+    // 📊 個股（2330）
     // =====================================================
     if (/^\d{4}$/.test(text)) {
 
@@ -293,7 +283,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     // =====================================================
-    // 💰 交易（最後 fallback）
+    // 💰 交易 fallback
     // =====================================================
     const parts = text.split(" ");
 
@@ -331,7 +321,7 @@ app.post("/webhook", async (req, res) => {
     return res.send("ok");
 
   } catch (err) {
-    console.error(err);
+    console.error("🔥 ERROR:", err);
     return res.send("error");
   }
 });
