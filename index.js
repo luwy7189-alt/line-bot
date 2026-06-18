@@ -8,6 +8,11 @@ app.use(express.json());
 const SHEET_ID = "1-9-RSSysVjFKRQ7RnJ5zkGtKIxcKqjhmvA0fqCqj_sw";
 
 // =========================
+// LINE TOKEN
+// =========================
+const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+
+// =========================
 // Google Auth
 // =========================
 function getAuth() {
@@ -32,6 +37,37 @@ async function getPrice(stock) {
   }
 }
 
+// =========================
+// LINE Reply
+// =========================
+async function replyMessage(replyToken, text) {
+  console.log("🔑 LINE TOKEN EXISTS:", !!LINE_TOKEN);
+
+  if (!LINE_TOKEN) {
+    console.log("❌ LINE TOKEN MISSING");
+    return;
+  }
+
+  await axios.post(
+    "https://api.line.me/v2/bot/message/reply",
+    {
+      replyToken,
+      messages: [
+        {
+          type: "text",
+          text: String(text).slice(0, 1900)
+        }
+      ]
+    },
+    {
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${LINE_TOKEN}`
+      }
+    }
+  );
+}
+
 app.get("/", (req, res) => res.send("OK"));
 
 // =========================
@@ -46,21 +82,23 @@ app.post("/webhook", async (req, res) => {
       return res.send("no event");
     }
 
+    const replyToken = event.replyToken;
     const rawText = event.message?.text || "";
     const text = rawText.trim();
 
-    console.log("🔥 RAW TEXT:", JSON.stringify(rawText));
-    console.log("🔥 TRIM TEXT:", JSON.stringify(text));
+    console.log("🔥 RAW:", JSON.stringify(rawText));
+    console.log("🔥 TEXT:", JSON.stringify(text));
+    console.log("👉 REPLY TOKEN:", replyToken);
 
     const auth = getAuth();
     await auth.authorize();
     const sheets = google.sheets({ version: "v4", auth });
 
     // =====================================================
-    // 📌 查持股（強化版：避免失效）
+    // 📊 查持股（不寫入）
     // =====================================================
     if (text.includes("持股")) {
-      console.log("📊 TRIGGER HOLDINGS");
+      console.log("📊 HOLDINGS TRIGGERED");
 
       const all = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
@@ -88,7 +126,7 @@ app.post("/webhook", async (req, res) => {
 損益：${profit.toFixed(0)}\n\n`;
       }
 
-      console.log(reply);
+      await replyMessage(replyToken, reply);
       return res.send("ok");
     }
 
@@ -100,7 +138,8 @@ app.post("/webhook", async (req, res) => {
     console.log("📌 PARTS:", parts);
 
     if (parts.length < 4) {
-      console.log("❌ FORMAT ERROR (need 4 parts)");
+      console.log("❌ FORMAT ERROR");
+      await replyMessage(replyToken, "格式錯誤：買/賣 股票 價格 股數");
       return res.send("format error");
     }
 
@@ -110,14 +149,14 @@ app.post("/webhook", async (req, res) => {
     const qty = Number(qtyStr);
 
     if (!action || !stock || isNaN(price) || isNaN(qty)) {
-      console.log("❌ INVALID DATA");
+      await replyMessage(replyToken, "資料錯誤");
       return res.send("bad format");
     }
 
     console.log("📌 TRADE:", { action, stock, price, qty });
 
     // =====================================================
-    // 📌 寫交易 Sheet1
+    // 📌 寫入交易 Sheet1
     // =====================================================
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
@@ -196,6 +235,8 @@ app.post("/webhook", async (req, res) => {
         }
       });
     }
+
+    await replyMessage(replyToken, "✅ 已更新持股");
 
     console.log("✅ DONE");
 
