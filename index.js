@@ -26,15 +26,13 @@ async function getPrice(stock) {
   try {
     const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${stock}.TW`;
     const res = await axios.get(url);
-    return res.data.quoteResponse.result[0].regularMarketPrice;
+    return res.data.quoteResponse.result[0].regularMarketPrice || 0;
   } catch (e) {
     return 0;
   }
 }
 
-app.get("/", (req, res) => {
-  res.send("OK");
-});
+app.get("/", (req, res) => res.send("OK"));
 
 // =========================
 // Webhook
@@ -51,10 +49,11 @@ app.post("/webhook", async (req, res) => {
     await auth.authorize();
     const sheets = google.sheets({ version: "v4", auth });
 
-    // =========================
-    // 📌 查持股 + 損益
-    // =========================
+    // =====================================================
+    // 📌 1️⃣ 查持股（不寫入 Sheet）
+    // =====================================================
     if (text === "持股") {
+      console.log("📊 查持股");
 
       const all = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
@@ -63,7 +62,7 @@ app.post("/webhook", async (req, res) => {
 
       const rows = all.data.values || [];
 
-      let reply = "📊 投資報表\n\n";
+      let reply = "📊 持股報表\n\n";
 
       for (const r of rows) {
         const stock = r[0];
@@ -86,18 +85,31 @@ app.post("/webhook", async (req, res) => {
       return res.send("ok");
     }
 
-    // =========================
-    // 📌 交易寫入 + 更新 positions
-    // =========================
-    const [action, stock, priceStr, qtyStr] = text.split(" ");
-    const price = Number(priceStr);
-    const qty = Number(qtyStr);
+    // =====================================================
+    // 📌 2️⃣ 交易指令（買 / 賣）
+    // =====================================================
+    const parts = text.split(" ");
 
-    if (!action || !stock || isNaN(qty)) {
+    if (parts.length < 4) {
+      console.log("❌ format error:", parts);
       return res.send("format error");
     }
 
-    // 1️⃣ 寫入交易紀錄
+    const [action, stock, priceStr, qtyStr] = parts;
+
+    const price = Number(priceStr);
+    const qty = Number(qtyStr);
+
+    // 防呆
+    if (!action || !stock || isNaN(price) || isNaN(qty)) {
+      return res.send("bad format");
+    }
+
+    console.log("📌 TRADE:", { action, stock, price, qty });
+
+    // =====================================================
+    // 📌 3️⃣ 寫入交易紀錄 Sheet1
+    // =====================================================
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
       range: "Sheet1!A:E",
@@ -113,7 +125,9 @@ app.post("/webhook", async (req, res) => {
       }
     });
 
-    // 2️⃣ 讀交易紀錄
+    // =====================================================
+    // 📌 4️⃣ 重新計算 positions
+    // =====================================================
     const all = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
       range: "Sheet1!A:E"
@@ -147,9 +161,9 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // =========================
-    // 3️⃣ 更新 positions（只清資料，不動標題）
-    // =========================
+    // =====================================================
+    // 📌 5️⃣ 更新 positions（只清資料，不動標題）
+    // =====================================================
     await sheets.spreadsheets.values.clear({
       spreadsheetId: SHEET_ID,
       range: "positions!A2:C"
@@ -160,7 +174,7 @@ app.post("/webhook", async (req, res) => {
       .map(([stock, v]) => [
         stock,
         v.qty,
-        v.qty === 0 ? 0 : (v.cost / v.qty).toFixed(2)
+        (v.qty === 0 ? 0 : v.cost / v.qty).toFixed(2)
       ]);
 
     if (output.length > 0) {
@@ -174,13 +188,13 @@ app.post("/webhook", async (req, res) => {
       });
     }
 
-    console.log("✅ UPDATED POSITIONS:", data);
+    console.log("✅ UPDATED POSITIONS");
 
-    res.send("ok");
+    return res.send("ok");
 
   } catch (err) {
     console.error("❌ ERROR:", err);
-    res.send("error");
+    return res.send("error");
   }
 });
 
