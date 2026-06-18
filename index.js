@@ -22,7 +22,7 @@ function getAuth() {
 }
 
 // =========================
-// Yahoo 股價（穩定版）
+// Yahoo 股價
 // =========================
 async function getPrice(stock) {
   try {
@@ -55,40 +55,52 @@ async function reply(replyToken, text) {
     },
     {
       headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${LINE_TOKEN}`
+        Authorization: `Bearer ${LINE_TOKEN}`,
+        "Content-Type": "application/json"
       }
     }
   );
 }
 
+// =========================
+// CLEAN TEXT（🔥關鍵修復）
+// =========================
+function cleanText(t) {
+  return (t || "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "") // invisible char
+    .replace(/\r/g, "")
+    .replace(/\n/g, "")
+    .trim();
+}
+
 app.get("/", (req, res) => res.send("OK"));
 
 // =========================
-// Webhook
+// WEBHOOK
 // =========================
 app.post("/webhook", async (req, res) => {
   try {
     const event = req.body.events?.[0];
     if (!event) return res.send("no event");
 
-    // 🚨 防呆清理
-    const text = (event.message?.text || "")
-      .replace(/\r/g, "")
-      .replace(/\n/g, "")
-      .trim();
-
+    let text = cleanText(event.message?.text);
     const replyToken = event.replyToken;
+
+    console.log("📩 INPUT:", text);
 
     const auth = getAuth();
     await auth.authorize();
     const sheets = google.sheets({ version: "v4", auth });
 
     // =====================================================
-    // 📊 持股
+    // 📊 持股（多種輸入都支援）
     // =====================================================
-    if (text.includes("持股")) {
-
+    if (
+      text === "持股" ||
+      text === "我的持股" ||
+      text === "持股報表" ||
+      text.includes("持股")
+    ) {
       const all = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
         range: "Sheet1!A:E"
@@ -124,8 +136,7 @@ app.post("/webhook", async (req, res) => {
 
       for (const s in data) {
         const qty = data[s].qty;
-
-        if (!qty || qty <= 0) continue; // 🚨 賣光不顯示
+        if (!qty || qty <= 0) continue;
 
         const avgCost = data[s].cost / qty;
         const price = await getPrice(s);
@@ -143,10 +154,14 @@ app.post("/webhook", async (req, res) => {
     }
 
     // =====================================================
-    // 📊 總覽 / 總攬
+    // 📊 總覽
     // =====================================================
-    if (text === "總覽" || text === "總攬") {
-
+    if (
+      text === "總覽" ||
+      text === "總攬" ||
+      text.includes("總覽") ||
+      text.includes("總攬")
+    ) {
       const all = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
         range: "Sheet1!A:E"
@@ -209,7 +224,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     // =====================================================
-    // 📊 個股查詢（2330）
+    // 📊 個股查詢
     // =====================================================
     if (/^\d{4}$/.test(text)) {
 
@@ -263,13 +278,11 @@ app.post("/webhook", async (req, res) => {
         "2412": "中華電"
       };
 
-      const name = nameMap[stock] || "未知股票";
-
       const msg =
 `📊 個股明細
 
 代碼：${stock}
-名稱：${name}
+名稱：${nameMap[stock] || "未知"}
 股數：${qty}
 成本：${avgCost.toFixed(2)}
 市價：${price}
@@ -280,13 +293,13 @@ app.post("/webhook", async (req, res) => {
     }
 
     // =====================================================
-    // 💰 交易
+    // 💰 交易（最後 fallback）
     // =====================================================
     const parts = text.split(" ");
 
     if (parts.length < 4) {
       await reply(replyToken, "格式: 買/賣 股票 價格 股數");
-      return res.send("bad");
+      return res.send("ok");
     }
 
     const [action, stock, priceStr, qtyStr] = parts;
@@ -296,7 +309,7 @@ app.post("/webhook", async (req, res) => {
 
     if (!action || !stock || isNaN(price) || isNaN(qty)) {
       await reply(replyToken, "資料錯誤");
-      return res.send("bad");
+      return res.send("ok");
     }
 
     await sheets.spreadsheets.values.append({
