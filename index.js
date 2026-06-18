@@ -22,12 +22,12 @@ app.post("/webhook", async (req, res) => {
     const event = req.body.events?.[0];
     if (!event || event.type !== "message") return res.send("no event");
 
-    const text = event.message.text.trim();
-    const [action, stock, price, qty] = text.split(" ");
+    const [action, stock, priceStr, qtyStr] = event.message.text.trim().split(" ");
+    const price = Number(priceStr);
+    const qty = Number(qtyStr);
 
     const auth = getAuth();
     await auth.authorize();
-
     const sheets = google.sheets({ version: "v4", auth });
 
     // =========================
@@ -49,7 +49,7 @@ app.post("/webhook", async (req, res) => {
     });
 
     // =========================
-    // 2️⃣ 讀取所有交易資料
+    // 2️⃣ 讀全部交易
     // =========================
     const all = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
@@ -58,50 +58,65 @@ app.post("/webhook", async (req, res) => {
 
     const rows = all.data.values || [];
 
-    const positions = {};
+    const data = {};
 
     for (const row of rows) {
       const s = row[1];
       const a = row[2];
+      const p = Number(row[3]);
       const q = Number(row[4]);
 
       if (!s || !a || isNaN(q)) continue;
 
-      if (!positions[s]) positions[s] = 0;
+      if (!data[s]) {
+        data[s] = {
+          qty: 0,
+          cost: 0
+        };
+      }
 
       if (a === "買") {
-        positions[s] += q;
-      } else if (a === "賣") {
-        positions[s] -= q;
+        data[s].cost += p * q;
+        data[s].qty += q;
+      }
+
+      if (a === "賣") {
+        // 賣出用平均成本扣
+        const avg = data[s].qty === 0 ? 0 : data[s].cost / data[s].qty;
+
+        data[s].cost -= avg * q;
+        data[s].qty -= q;
       }
     }
 
     // =========================
-    // 3️⃣ 清空 positions sheet
+    // 3️⃣ 寫入 positions + cost
     // =========================
     await sheets.spreadsheets.values.clear({
       spreadsheetId: SHEET_ID,
-      range: "positions!A:B"
+      range: "positions!A:C"
     });
 
-    // =========================
-    // 4️⃣ 寫入最新持股
-    // =========================
-    const result = Object.entries(positions).map(([stock, qty]) => [
-      stock,
-      qty
-    ]);
+    const result = Object.entries(data).map(([stock, v]) => {
+      const avgCost = v.qty === 0 ? 0 : (v.cost / v.qty).toFixed(2);
+
+      return [
+        stock,
+        v.qty,
+        avgCost
+      ];
+    });
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
-      range: "positions!A:B",
+      range: "positions!A:C",
       valueInputOption: "RAW",
       requestBody: {
         values: result
       }
     });
 
-    console.log("✅ POSITIONS UPDATED:", positions);
+    console.log("✅ UPDATED:", data);
 
     res.send("ok");
 
