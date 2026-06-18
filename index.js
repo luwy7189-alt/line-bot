@@ -1,20 +1,11 @@
 const express = require("express");
 const { google } = require("googleapis");
 
-console.log("PRIVATE KEY EXISTS:", !!process.env.GOOGLE_PRIVATE_KEY);
-console.log("EMAIL EXISTS:", !!process.env.GOOGLE_CLIENT_EMAIL);
-
 const app = express();
 app.use(express.json());
 
-// =========================
-// Google Sheet ID
-// =========================
 const SHEET_ID = "1-9-RSSysVjFKRQ7RnJ5zkGtKIxcKqjhmvA0fqCqj_sw";
 
-// =========================
-// Google Auth
-// =========================
 function getAuth() {
   return new google.auth.JWT(
     process.env.GOOGLE_CLIENT_EMAIL,
@@ -24,76 +15,25 @@ function getAuth() {
   );
 }
 
-// =========================
-// Health Check
-// =========================
-app.get("/", (req, res) => {
-  res.send("OK");
-});
+app.get("/", (req, res) => res.send("OK"));
 
-// =========================
-// LINE Webhook
-// =========================
 app.post("/webhook", async (req, res) => {
   try {
-    console.log("🔥 WEBHOOK HIT");
-    console.log(JSON.stringify(req.body, null, 2));
+    const event = req.body.events?.[0];
+    if (!event || event.type !== "message") return res.send("no event");
 
-    const events = req.body.events;
+    const text = event.message.text.trim();
+    const [action, stock, price, qty] = text.split(" ");
 
-    if (!events || events.length === 0) {
-      console.log("⚠️ NO EVENTS");
-      return res.status(200).send("no event");
-    }
-
-    const event = events[0];
-
-    if (event.type !== "message") {
-      console.log("⚠️ NOT MESSAGE EVENT:", event.type);
-      return res.status(200).send("not message");
-    }
-
-    const text = event.message.text;
-    console.log("💬 MESSAGE:", text);
-
-    // =========================
-    // 解析：買 2330 580 10
-    // =========================
-    const parts = text.trim().split(" ");
-
-    if (parts.length < 4) {
-      console.log("❌ FORMAT ERROR");
-      return res.status(200).send("format error");
-    }
-
-    const action = parts[0];
-    const stock = parts[1];
-    const price = parts[2];
-    const qty = parts[3];
-
-    // =========================
-    // Debug Info
-    // =========================
-    console.log("📊 PARSED DATA:", {
-      action,
-      stock,
-      price,
-      qty
-    });
-
-    console.log("🔑 CLIENT EMAIL:", process.env.GOOGLE_CLIENT_EMAIL);
-
-    // =========================
-    // Google Sheets
-    // =========================
     const auth = getAuth();
     await auth.authorize();
 
-    console.log("🔐 GOOGLE AUTH OK");
-
     const sheets = google.sheets({ version: "v4", auth });
 
-    const result = await sheets.spreadsheets.values.append({
+    // =========================
+    // 1️⃣ 寫入交易紀錄
+    // =========================
+    await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
       range: "Sheet1!A:E",
       valueInputOption: "RAW",
@@ -108,16 +48,66 @@ app.post("/webhook", async (req, res) => {
       }
     });
 
-    console.log("✅ GOOGLE WRITE SUCCESS");
-    console.log(JSON.stringify(result.data, null, 2));
+    // =========================
+    // 2️⃣ 讀取所有交易資料
+    // =========================
+    const all = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Sheet1!A:E"
+    });
 
-    return res.status(200).send("ok");
+    const rows = all.data.values || [];
+
+    const positions = {};
+
+    for (const row of rows) {
+      const s = row[1];
+      const a = row[2];
+      const q = Number(row[4]);
+
+      if (!s || !a || isNaN(q)) continue;
+
+      if (!positions[s]) positions[s] = 0;
+
+      if (a === "買") {
+        positions[s] += q;
+      } else if (a === "賣") {
+        positions[s] -= q;
+      }
+    }
+
+    // =========================
+    // 3️⃣ 清空 positions sheet
+    // =========================
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: SHEET_ID,
+      range: "positions!A:B"
+    });
+
+    // =========================
+    // 4️⃣ 寫入最新持股
+    // =========================
+    const result = Object.entries(positions).map(([stock, qty]) => [
+      stock,
+      qty
+    ]);
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "positions!A:B",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: result
+      }
+    });
+
+    console.log("✅ POSITIONS UPDATED:", positions);
+
+    res.send("ok");
 
   } catch (err) {
-    console.error("❌ GOOGLE ERROR FULL:");
-    console.error(err.response?.data || err.message || err);
-
-    return res.status(200).send("error");
+    console.error(err);
+    res.send("error");
   }
 });
 
